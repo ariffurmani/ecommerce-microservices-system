@@ -7,8 +7,7 @@
 [![Build](https://img.shields.io/badge/Build-Maven-C71A36)](https://maven.apache.org/)
 [![Payment](https://img.shields.io/badge/Payment-Stripe-635BFF)](https://stripe.com/)
 
-Central showcase repository for a production-style e-commerce backend built with Spring Boot microservices.  
-This repository is the **entry point** for recruiters, portfolio visitors, and developers to understand the full system landscape across services.
+Central showcase for a production-style e-commerce backend built as a distributed system of loosely coupled microservices using Java, Spring Boot, MySQL, and Stripe. Links to all individual service repositories.
 
 ---
 
