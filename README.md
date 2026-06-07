@@ -5,6 +5,7 @@
 [![Architecture](https://img.shields.io/badge/Architecture-Microservices-0A66C2)](https://microservices.io/)
 [![Database](https://img.shields.io/badge/Database-MySQL-4479A1)](https://www.mysql.com/)
 [![Build](https://img.shields.io/badge/Build-Maven-C71A36)](https://maven.apache.org/)
+[![Payment](https://img.shields.io/badge/Payment-Stripe-635BFF)](https://stripe.com/)
 
 Central showcase repository for a production-style e-commerce backend built with Spring Boot microservices.  
 This repository is the **entry point** for recruiters, portfolio visitors, and developers to understand the full system landscape across services.
@@ -41,39 +42,55 @@ Combined capabilities across all repositories:
 
 ---
 
-## Architecture
+## System Architecture
 
-Each service owns its business capability and data concerns, with synchronous service-to-service communication.
-
-- **Client Layer**: Web/mobile clients
-- **Gateway Layer**: API Gateway (recommended entry point for routing, auth, and rate limiting)
-- **Service Layer**: user, product, order, payment microservices
-- **Data / Integration Layer**: MySQL databases + external payment provider (Stripe)
-
-### System Flow
-
-```text
-User / Client
-   |
-   v
-API Gateway (recommended)
-   |
-   +--> user-service ------> MySQL
-   |
-   +--> product-service ---> MySQL
-   |
-   +--> order-service -----> MySQL
-   |         |
-   |         +--> product-service (product enrichment)
-   |
-   +--> payment-service ---> order-service (order fetch)
-             |
-             +--> Stripe API (payment link)
-
-(Planned extension) Services --> Kafka (event-driven communication)
 ```
-
-> **Architecture diagram placeholder:** add system diagram image at `docs/architecture.png` when available.
+                    ┌──────────────────────────────────┐
+                    │           API Clients            │
+                    │   Web / Mobile / Postman / etc.  │
+                    └────────┬─────────────────┬───────┘
+                             │                 │
+                        Bearer JWT        Bearer JWT
+                             │                 │
+          ┌──────────────────▼──┐    ┌─────────▼─────────────────┐
+          │    user-service     │    │      product-service       │
+          │       :8082         │    │          :8080             │
+          │                     │    │                            │
+          │  Signup / Login     │    │  Product CRUD              │
+          │  JWT issuance       │    │  Category filtering        │
+          │  Token validation   │    │  Stock management          │
+          │  MySQL              │    │  Soft-delete               │
+          │  (users, roles,     │    │  MySQL                     │
+          │   tokens)           │    │  (products, categories)    │
+          └─────────────────────┘    └────────────┬───────────────┘
+                                                  │
+                                       REST — stock decrement
+                                       REST — product details
+                                                  │
+          ┌───────────────────────────────────────▼───────────────┐
+          │                    order-service                      │
+          │                       :8083                           │
+          │                                                       │
+          │  Order lifecycle: PENDING → CONFIRMED → DELIVERED     │
+          │  Calls product-service to fetch details + sync stock  │
+          │  MySQL (orders, order_items)                          │
+          └───────────────────────────┬───────────────────────────┘
+                                      │
+                                   orderId
+                                      │
+          ┌───────────────────────────▼───────────────────────────┐
+          │                  payment-service                      │
+          │                      :8084                            │
+          │                                                       │
+          │  Accepts orderId                                      │
+          │  Fetches order details from order-service             │
+          │  Creates Stripe payment link via stripe-java SDK      │
+          │  Stateless — no database                              │
+          └───────────────────────────┬───────────────────────────┘
+                                      │ HTTPS
+                                      ▼
+                                 Stripe API
+```
 
 ---
 
@@ -85,6 +102,20 @@ API Gateway (recommended)
 | Product Service | Product CRUD, category-based retrieval, soft-delete behavior | [ariffurmani/product-service](https://github.com/ariffurmani/product-service) | Java 17, Spring Boot 3.5.5, Spring Web, Spring Data JPA, MySQL |
 | Order Service | Order management, customer order retrieval, status updates, product-detail enrichment | [ariffurmani/order-service](https://github.com/ariffurmani/order-service) | Java 17, Spring Boot 4.0.6, Spring Web, Validation, JPA, MySQL, RestTemplate |
 | Payment Service | Payment link generation for orders via Stripe integration | [ariffurmani/payment-service](https://github.com/ariffurmani/payment-service) | Java 17, Spring Boot 4.0.6, Stripe Java SDK, Spring Web MVC, RestTemplate |
+
+---
+
+## Key Engineering Highlights
+
+**Decentralized JWT validation** — `user-service` issues tokens; `product-service` and `order-service` each validate JWTs locally using a shared HMAC secret via a custom `HandlerInterceptor`. No central auth gateway, no extra network call per request.
+
+**Role-based access control** — All write operations (`POST`, `PUT`, `DELETE`) across product and order services require the `ADMIN` role embedded in JWT claims, enforced at the interceptor level before reaching any controller.
+
+**Synchronous stock management** — When an order is created, `order-service` calls `product-service` to fetch product details and decrement stock in the same request flow. On cancellation or deletion, stock is incremented back. Inventory stays consistent without a message broker.
+
+**Stateless payment service** — `payment-service` owns no database. It accepts an `orderId`, fetches order data from `order-service` at runtime, maps it to Stripe line items, and returns a Stripe-hosted payment URL. Fully stateless and horizontally scalable.
+
+**Bounded context ownership** — Each service owns its schema entirely. No shared databases, no cross-service JPA joins. `order-service` stores only `productId` as a reference — product names and prices are fetched at order creation time and stored as a snapshot in `order_items`.
 
 ---
 
@@ -134,7 +165,39 @@ API Gateway (recommended)
 
 ---
 
-## Docker Compose (Starter Template)
+## End-to-End Flow: Placing an Order
+
+```
+Step 1 — Authenticate
+  POST /user/login
+  └── user-service validates credentials
+  └── Returns signed JWT (contains email + roles)
+
+Step 2 — Create Order  [Authorization: Bearer <token>]
+  POST /orders
+  └── order-service validates JWT locally using shared HMAC secret
+  └── Calls GET /product/{id} on product-service
+        └── Fetches name, price, available stock
+  └── Calls POST /product/{id}/stock/decrement on product-service
+        └── Reduces stock quantity
+  └── Persists Order + OrderItems snapshot to order_service_db
+  └── Returns orderId
+
+Step 3 — Generate Payment Link
+  GET /payments/generatePaymentLink?orderId={orderId}
+  └── payment-service calls GET /orders/{orderId} on order-service
+  └── Maps order items to Stripe line item format
+  └── Calls Stripe API via stripe-java SDK
+  └── Returns Stripe-hosted payment URL to client
+
+Step 4 — Customer pays
+  └── Customer completes checkout on Stripe-hosted page
+  └── Stripe handles payment processing
+```
+
+---
+
+## Docker Compose
 
 A compose baseline can be used for local orchestration. Update ports/env vars to match your final deployment setup.
 
@@ -187,31 +250,18 @@ volumes:
   mysql_data:
 ```
 
-> Note: this is a **starter template**. Current repositories do not provide a unified compose setup in this showcase repo.
-
 ---
 
 ## API Documentation
 
-No centralized Swagger hub is currently published. Use service-level docs/endpoints:
+No centralized Swagger hub is published yet. Use service-level READMEs:
 
-- **Order Service**
-  - Endpoints: `POST/GET/PUT/DELETE /api/orders...`
-  - Docs: [order-service/README.md](https://github.com/ariffurmani/order-service/blob/master/README.md)
-
-- **Product Service**
-  - Base: `/products`
-  - Docs: [product-service/README.md](https://github.com/ariffurmani/product-service/blob/master/README.md)
-  - Quick Reference: [API_QUICK_REFERENCE.md](https://github.com/ariffurmani/product-service/blob/master/API_QUICK_REFERENCE.md)
-  - Postman: [POSTMAN_COLLECTION.json](https://github.com/ariffurmani/product-service/blob/master/POSTMAN_COLLECTION.json)
-
-- **User Service**
-  - Endpoints: `/user/signup`, `/user/login`, `/user/validateToken`
-  - Docs: [user-service/README.md](https://github.com/ariffurmani/user-service/blob/master/README.md)
-
-- **Payment Service**
-  - Endpoint: `/payments/generatePaymentLink?orderId={id}`
-  - Controller reference: [PaymentController.java](https://github.com/ariffurmani/payment-service/blob/master/src/main/java/org/furmani/paymentservice/controller/PaymentController.java)
+| Service | Base Path | Docs |
+|---|---|---|
+| user-service | `/user` | [README](https://github.com/ariffurmani/user-service/blob/master/README.md) |
+| product-service | `/product` | [README](https://github.com/ariffurmani/product-service/blob/master/README.md) · [Quick Reference](https://github.com/ariffurmani/product-service/blob/master/API_QUICK_REFERENCE.md) · [Postman Collection](https://github.com/ariffurmani/product-service/blob/master/POSTMAN_COLLECTION.json) |
+| order-service | `/orders` | [README](https://github.com/ariffurmani/order-service/blob/master/README.md) |
+| payment-service | `/payments` | [README](https://github.com/ariffurmani/payment-service/blob/master/README.md) |
 
 ---
 
@@ -250,4 +300,3 @@ ariffurmani/
 ## Author Repositories
 
 - [https://github.com/ariffurmani](https://github.com/ariffurmani)
-
