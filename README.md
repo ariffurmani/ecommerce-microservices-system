@@ -52,7 +52,7 @@ Combined capabilities across all repositories:
                              │                 │
                         Bearer JWT        Bearer JWT
                              │                 │
-          ┌──────────────────▼──┐    ┌─────────▼─────────────────┐
+          ┌──────────────────▼──┐    ┌─────────▼──────────────────┐
           │    user-service     │    │      product-service       │
           │       :8082         │    │          :8080             │
           │                     │    │                            │
@@ -259,7 +259,7 @@ No centralized Swagger hub is published yet. Use service-level READMEs:
 | Service | Base Path | Docs |
 |---|---|---|
 | user-service | `/user` | [README](https://github.com/ariffurmani/user-service/blob/master/README.md) |
-| product-service | `/product` | [README](https://github.com/ariffurmani/product-service/blob/master/README.md) · [Quick Reference](https://github.com/ariffurmani/product-service/blob/master/API_QUICK_REFERENCE.md) · [Postman Collection](https://github.com/ariffurmani/product-service/blob/master/POSTMAN_COLLECTION.json) |
+| product-service | `/product` | [README](https://github.com/ariffurmani/product-service/blob/master/README.md) |
 | order-service | `/orders` | [README](https://github.com/ariffurmani/order-service/blob/master/README.md) |
 | payment-service | `/payments` | [README](https://github.com/ariffurmani/payment-service/blob/master/README.md) |
 
